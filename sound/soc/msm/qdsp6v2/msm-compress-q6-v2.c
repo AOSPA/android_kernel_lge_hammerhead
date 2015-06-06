@@ -81,6 +81,7 @@ struct msm_compr_gapless_state {
 	uint32_t trailing_samples_drop;
 	uint32_t gapless_transition;
 	bool use_dsp_gapless_mode;
+	union snd_codec_options codec_options;
 };
 
 static unsigned int supported_sample_rates[] = {
@@ -460,12 +461,28 @@ static void populate_codec_list(struct msm_compr_audio *prtd)
 }
 
 static int msm_compr_send_media_format_block(struct snd_compr_stream *cstream,
-					     int stream_id)
+					     int stream_id,
+					     bool use_gapless_codec_options)
 {
 	struct snd_compr_runtime *runtime = cstream->runtime;
 	struct msm_compr_audio *prtd = runtime->private_data;
 	struct asm_aac_cfg aac_cfg;
+	union snd_codec_options *codec_options;
+
 	int ret = 0;
+
+	pr_debug("%s: use_gapless_codec_options %d\n",
+			__func__, use_gapless_codec_options);
+
+	if (use_gapless_codec_options)
+		codec_options = &(prtd->gapless_state.codec_options);
+	else
+		codec_options = &(prtd->codec_param.codec.options);
+
+	if (!codec_options) {
+		pr_err("%s: codec_options is NULL\n", __func__);
+		return -EINVAL;
+	}
 
 	switch (prtd->codec) {
 	case FORMAT_MP3:
@@ -575,9 +592,10 @@ static int msm_compr_configure_dsp(struct snd_compr_stream *cstream)
 	prtd->buffer_paddr = ac->port[dir].buf[0].phys;
 	prtd->buffer_size  = runtime->fragments * runtime->fragment_size;
 
-	ret = msm_compr_send_media_format_block(cstream, ac->stream_id);
-	if (ret < 0)
+	ret = msm_compr_send_media_format_block(cstream, ac->stream_id, false);
+	if (ret < 0) {
 		pr_err("%s, failed to send media format block\n", __func__);
+	}
 
 	return ret;
 }
@@ -1244,7 +1262,8 @@ static int msm_compr_trigger(struct snd_compr_stream *cstream, int cmd)
 				 __func__);
 			break;
 		}
-		rc = msm_compr_send_media_format_block(cstream, stream_id);
+		rc = msm_compr_send_media_format_block(cstream,
+						stream_id, false);
 		if (rc < 0) {
 			 pr_err("%s, failed to send media format block\n",
 				__func__);
@@ -1510,6 +1529,31 @@ static int msm_compr_set_metadata(struct snd_compr_stream *cstream,
 	}
 
 	return 0;
+}
+
+static int msm_compr_set_next_track_param(struct snd_compr_stream *cstream,
+				union snd_codec_options *codec_options)
+{
+	struct msm_compr_audio *prtd;
+	struct audio_client *ac;
+	int ret = 0;
+
+	pr_debug("%s\n", __func__);
+	if (!codec_options || !cstream)
+		return -EINVAL;
+
+	prtd = cstream->runtime->private_data;
+	if (!prtd || !prtd->audio_client) {
+		pr_err("%s: prtd or audio client is NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	ac = prtd->audio_client;
+
+	pr_debug("%s: got codec options for codec type %u",
+		__func__, prtd->codec);
+
+	return ret;
 }
 
 static int msm_compr_volume_put(struct snd_kcontrol *kcontrol,
@@ -1826,16 +1870,17 @@ static int msm_compr_new(struct snd_soc_pcm_runtime *rtd)
 }
 
 static struct snd_compr_ops msm_compr_ops = {
-	.open		= msm_compr_open,
-	.free		= msm_compr_free,
-	.trigger	= msm_compr_trigger,
-	.pointer	= msm_compr_pointer,
-	.set_params	= msm_compr_set_params,
-	.set_metadata	= msm_compr_set_metadata,
-	.ack		= msm_compr_ack,
-	.copy		= msm_compr_copy,
-	.get_caps	= msm_compr_get_caps,
-	.get_codec_caps = msm_compr_get_codec_caps,
+	.open			= msm_compr_open,
+	.free			= msm_compr_free,
+	.trigger		= msm_compr_trigger,
+	.pointer		= msm_compr_pointer,
+	.set_params		= msm_compr_set_params,
+	.set_metadata		= msm_compr_set_metadata,
+	.set_next_track_param	= msm_compr_set_next_track_param,
+	.ack			= msm_compr_ack,
+	.copy			= msm_compr_copy,
+	.get_caps		= msm_compr_get_caps,
+	.get_codec_caps		= msm_compr_get_codec_caps,
 };
 
 static struct snd_soc_platform_driver msm_soc_platform = {
